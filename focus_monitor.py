@@ -217,7 +217,7 @@ class FocusMonitor:
             print(f'  \U0001f4f1 {s["name"]}  [{bid}]', flush=True)
             print(f'     可疑/总计: {s["suspicious"]}/{s["total"]}  ({pct:.0f}%)', flush=True)
             if tags:
-                print(f'     手段: {\", \".join(tags)}', flush=True)
+                sep = ', '; print(f'     手段: {sep.join(tags)}', flush=True)
             print(flush=True)
 
     def start(self):
