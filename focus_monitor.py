@@ -179,7 +179,8 @@ class FocusMonitor:
                     self._check_activation(active)
                 time.sleep(self.interval)
         except KeyboardInterrupt:
-            self.running = False
+            pass
+        finally:
             self.print_report()
 
     def print_report(self):
@@ -209,6 +210,13 @@ class FocusMonitor:
                 print(f'     手段: {sep_tags.join(tags)}', flush=True)
             if s.get('path'):
                 print(f'     路径: {s["path"]}', flush=True)
+                # 在访达中定位 + 改名建议
+                app_dir = s['path']
+                app_name = os.path.basename(app_dir)
+                disabled = app_name.replace('.app', '_disabled.app')
+                print(f'     🔍 定位: open -R "{app_dir}"', flush=True)
+                print(f'     🚫 禁用: mv "{app_dir}" "{os.path.join(os.path.dirname(app_dir), disabled)}"', flush=True)
+                print(f'     💡 改名后该应用无法被自动触发', flush=True)
             print(flush=True)
 
 
