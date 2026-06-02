@@ -1,44 +1,55 @@
 #!/usr/bin/env python3
 """
 macOS Window Focus Monitor - 实时检测偷焦点的应用
+===================================================
 
-监测所有窗口焦点变动，通过分析用户输入与应用激活的时间差，
-识别偷焦点的软件。
-
-检测目标行为:
-  - activateIgnoringOtherApps  — 强制激活自身窗口
-  - makeMeKeyWindow            — 强占为焦点窗口
-  - FloatPanel                 — 浮动覆盖层窗口
-  - LSUIElement = true         — 后台无 Dock 图标偷偷运行
+安装:
+    pip3 install -r requirements.txt
+    然后去 系统设置 → 隐私与安全性 → 辅助功能 勾选终端
 
 用法:
-  python3 focus_monitor.py              # 只显示可疑事件
-  python3 focus_monitor.py -v           # 显示所有焦点变化
-  python3 focus_monitor.py -t 0.5       # 自定义阈值
-  python3 focus_monitor.py -v -o log.txt
+    python3 focus_monitor.py              # 只显示可疑事件
+    python3 focus_monitor.py -v           # 显示所有焦点变化
+    python3 focus_monitor.py -t 0.5       # 自定义阈值(默认0.3s)
+    python3 focus_monitor.py -o log.txt   # 同时写日志文件
+
+Ctrl+C 停止，自动输出汇总报告。
 """
 
 import sys
-import time
 import os
+
+# ── 依赖检查 ──────────────────────────────────────────
+MISSING = []
+try:
+    import Quartz
+except ImportError:
+    MISSING.append("pyobjc-framework-Quartz")
+try:
+    from AppKit import (
+        NSWorkspace, NSWorkspaceDidActivateApplicationNotification,
+        NSWorkspaceApplicationKey, NSObject, NSTimer,
+    )
+except ImportError:
+    MISSING.append("pyobjc-framework-Cocoa")
+try:
+    from Foundation import CFRunLoopRun, CFRunLoopStop, CFRunLoopGetCurrent
+except ImportError:
+    pass  # included in Cocoa framework
+
+if MISSING:
+    print("缺少依赖，请先安装:")
+    print(f"  pip3 install {' '.join(MISSING)}")
+    print("或一步到位:")
+    print("  pip3 install -r requirements.txt")
+    sys.exit(1)
+# ───────────────────────────────────────────────────────
+
+import time
 import signal
 import argparse
 from datetime import datetime
 from collections import defaultdict
-
-import Quartz
-from AppKit import (
-    NSWorkspace,
-    NSWorkspaceDidActivateApplicationNotification,
-    NSWorkspaceApplicationKey,
-    NSObject,
-    NSTimer,
-)
-from Foundation import (
-    CFRunLoopRun,
-    CFRunLoopStop,
-    CFRunLoopGetCurrent,
-)
 
 
 class AppObserver(NSObject):
@@ -184,7 +195,7 @@ class FocusMonitor:
             )
 
     def print_report(self):
-        sep = '─' * 50
+        sep = '\u2500' * 50
         print(f'\n{sep}\n  实时监测报告\n{sep}', flush=True)
 
         bad = {k: v for k, v in self.stats.items() if v['suspicious'] > 0}
@@ -210,9 +221,9 @@ class FocusMonitor:
             print(flush=True)
 
     def start(self):
-        print('═' * 50, flush=True)
+        print('\u2550' * 50, flush=True)
         print('  macOS Focus Monitor - 实时偷焦点检测', flush=True)
-        print('═' * 50, flush=True)
+        print('\u2550' * 50, flush=True)
         print(f'  阈值: {self.threshold}s  |  Ctrl+C 停止并出报告\n', flush=True)
 
         self.running = True
@@ -223,7 +234,6 @@ class FocusMonitor:
             NSWorkspaceDidActivateApplicationNotification, None,
         )
 
-        # 动态添加 pollInputTimer: 方法
         def poll_input_timer(self_, timer_):
             m = self_.monitor()
             if m and m.running:
@@ -248,7 +258,10 @@ class FocusMonitor:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='macOS 实时焦点监测')
+    parser = argparse.ArgumentParser(
+        description='macOS 实时焦点监测',
+        epilog='示例: python3 focus_monitor.py -v -t 0.5',
+    )
     parser.add_argument('-o', '--output', help='日志文件路径')
     parser.add_argument('-v', '--verbose', action='store_true', help='显示所有焦点变化')
     parser.add_argument('-t', '--threshold', type=float, default=0.3,
