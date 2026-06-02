@@ -3,9 +3,10 @@
 macOS Window Focus Monitor - 实时检测偷焦点的应用
 ===================================================
 
+轮询方式，简单可靠，无需理解 Cocoa run loop。
+
 安装:
-    pip3 install -r requirements.txt
-    然后去 系统设置 → 隐私与安全性 → 辅助功能 勾选终端
+    pip3 install pyobjc-framework-Quartz pyobjc-framework-Cocoa
 
 用法:
     python3 focus_monitor.py              # 只显示可疑事件
@@ -18,73 +19,39 @@ Ctrl+C 停止，自动输出汇总报告。
 
 import sys
 import os
-
-# ── 依赖检查 ──────────────────────────────────────────
-MISSING = []
-try:
-    import Quartz
-except ImportError:
-    MISSING.append("pyobjc-framework-Quartz")
-try:
-    from AppKit import (
-        NSWorkspace, NSWorkspaceDidActivateApplicationNotification,
-        NSWorkspaceApplicationKey, NSObject, NSTimer,
-    )
-except ImportError:
-    MISSING.append("pyobjc-framework-Cocoa")
-try:
-    from Foundation import CFRunLoopRun, CFRunLoopStop, CFRunLoopGetCurrent
-except ImportError:
-    pass  # included in Cocoa framework
-
-if MISSING:
-    print("缺少依赖，请先安装:")
-    print(f"  pip3 install {' '.join(MISSING)}")
-    print("或一步到位:")
-    print("  pip3 install -r requirements.txt")
-    sys.exit(1)
-# ───────────────────────────────────────────────────────
-
 import time
 import signal
 import argparse
 from datetime import datetime
 from collections import defaultdict
 
+# ── 依赖检查 ──────────────────────────────────────────
+try:
+    from AppKit import NSWorkspace
+except ImportError:
+    print("缺少依赖，请安装:")
+    print("  pip3 install pyobjc-framework-Quartz pyobjc-framework-Cocoa")
+    sys.exit(1)
 
-class AppObserver(NSObject):
-    """接收 NSWorkspace 通知的 ObjC 观察者。"""
-
-    def initWithMonitor_(self, monitor):
-        self = self.init()
-        if self:
-            self._monitor = monitor
-        return self
-
-    def handleAppActivation_(self, notification):
-        user_info = notification.userInfo()
-        running_app = user_info.get(NSWorkspaceApplicationKey) if user_info else None
-        if not running_app:
-            return
-        app_info = {
-            'pid': running_app.processIdentifier(),
-            'name': running_app.localizedName() or 'Unknown',
-            'bundle_id': running_app.bundleIdentifier() or f"pid-{running_app.processIdentifier()}",
-        }
-        bundle_url = running_app.bundleURL()
-        app_info['bundle_path'] = bundle_url.path() if bundle_url else None
-
-        if self._monitor:
-            self._monitor.process_activation(app_info)
+try:
+    import Quartz
+except ImportError:
+    print("缺少依赖，请安装:")
+    print("  pip3 install pyobjc-framework-Quartz")
+    sys.exit(1)
+# ───────────────────────────────────────────────────────
 
 
 class FocusMonitor:
-    """实时监测焦点变化并标记可疑行为。"""
+    """轮询监测窗口焦点变化，标记可疑应用。"""
 
-    def __init__(self, output_file=None, verbose=False, threshold=0.3):
+    def __init__(self, output_file=None, verbose=False, threshold=0.3, interval=0.1):
         self.output_file = output_file
         self.verbose = verbose
         self.threshold = threshold
+        self.interval = interval  # 轮询间隔
+
+        self.last_app_name = None
         self.last_input_time = time.time()
         self.stats = {}
         self.running = False
@@ -94,7 +61,7 @@ class FocusMonitor:
             self.stats[bundle_id] = {
                 'total': 0, 'suspicious': 0,
                 'lsui_element': None, 'floating': None,
-                'name': 'Unknown',
+                'name': 'Unknown', 'path': None,
             }
         return self.stats[bundle_id]
 
@@ -148,29 +115,28 @@ class FocusMonitor:
         except Exception:
             return float('inf')
 
-    def poll_input(self):
-        idle = self.seconds_since_input()
-        self.last_input_time = time.time() - idle
-
-    def process_activation(self, app_info):
-        if not app_info:
-            return
-
+    def _check_activation(self, app_info):
+        """检测一次激活是否为偷焦点。"""
         now = time.time()
-        delta = now - self.last_input_time
+        # 用 CG 底层 API 获取精确闲置时间
+        idle = self.seconds_since_input()
+        self.last_input_time = now - idle
+        delta = idle  # 距上次用户操作的时间
+
         suspicious = delta > self.threshold
-        bid = app_info['bundle_id']
+        bid = app_info.get('NSApplicationBundleIdentifier') or f"pid-{app_info.get('NSApplicationProcessIdentifier', '?')}"
 
         s = self._get_stats(bid)
         s['total'] += 1
-        s['name'] = app_info.get('name', 'Unknown')
+        s['name'] = app_info.get('NSApplicationName', 'Unknown')
+        s['path'] = app_info.get('NSApplicationPath')
 
         if suspicious:
             s['suspicious'] += 1
             if s['lsui_element'] is None:
-                s['lsui_element'] = self.check_lsui_element(app_info.get('bundle_path'))
+                s['lsui_element'] = self.check_lsui_element(app_info.get('NSApplicationPath'))
             if s['floating'] is None:
-                s['floating'] = self.has_floating_windows(app_info['pid'])
+                s['floating'] = self.has_floating_windows(app_info.get('NSApplicationProcessIdentifier', 0))
 
             tags = []
             if s['lsui_element']:
@@ -184,15 +150,37 @@ class FocusMonitor:
 
             tag_str = f"  [{', '.join(tags)}]" if tags else ''
             self.log(
-                f'\u26a0  {app_info["name"]}  '
-                f'(PID {app_info["pid"]}, {bid})  '
+                f'\u26a0  {app_info["NSApplicationName"]}  '
+                f'(PID {app_info.get("NSApplicationProcessIdentifier", "?")}, {bid})  '
                 f'\u0394t={delta:.2f}s{tag_str}'
             )
         elif self.verbose:
             self.log(
-                f'\u2713  {app_info["name"]}  '
-                f'(PID {app_info["pid"]})'
+                f'\u2713  {app_info["NSApplicationName"]}  '
+                f'(PID {app_info.get("NSApplicationProcessIdentifier", "?")})'
             )
+
+    def run(self):
+        """主轮询循环。"""
+        ws = NSWorkspace.sharedWorkspace()
+
+        print('\u2550' * 50, flush=True)
+        print('  macOS Focus Monitor - 实时偷焦点检测', flush=True)
+        print('\u2550' * 50, flush=True)
+        print(f'  阈值: {self.threshold}s | 轮询间隔: {self.interval}s | Ctrl+C 停止\n', flush=True)
+
+        self.running = True
+        try:
+            while self.running:
+                active = ws.activeApplication()
+                name = active.get('NSApplicationName', '')
+                if name != self.last_app_name:
+                    self.last_app_name = name
+                    self._check_activation(active)
+                time.sleep(self.interval)
+        except KeyboardInterrupt:
+            self.running = False
+            self.print_report()
 
     def print_report(self):
         sep = '\u2500' * 50
@@ -217,72 +205,40 @@ class FocusMonitor:
             print(f'  \U0001f4f1 {s["name"]}  [{bid}]', flush=True)
             print(f'     可疑/总计: {s["suspicious"]}/{s["total"]}  ({pct:.0f}%)', flush=True)
             if tags:
-                sep = ', '; print(f'     手段: {sep.join(tags)}', flush=True)
+                sep_tags = ', '
+                print(f'     手段: {sep_tags.join(tags)}', flush=True)
+            if s.get('path'):
+                print(f'     路径: {s["path"]}', flush=True)
             print(flush=True)
-
-    def start(self):
-        print('\u2550' * 50, flush=True)
-        print('  macOS Focus Monitor - 实时偷焦点检测', flush=True)
-        print('\u2550' * 50, flush=True)
-        print(f'  阈值: {self.threshold}s  |  Ctrl+C 停止并出报告\n', flush=True)
-
-        self.running = True
-        ws = NSWorkspace.sharedWorkspace()
-        self._observer = AppObserver.alloc().initWithMonitor_(self)
-        ws.notificationCenter().addObserver_selector_name_object_(
-            self._observer, 'handleAppActivation:',
-            NSWorkspaceDidActivateApplicationNotification, None,
-        )
-
-        def poll_input_timer(self_, timer_):
-            m = self_.monitor()
-            if m and m.running:
-                m.poll_input()
-
-        AppObserver.monitor = lambda s: s._monitor
-        AppObserver.pollInputTimer_ = poll_input_timer
-
-        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            0.1, self._observer, 'pollInputTimer:', None, True,
-        )
-
-        try:
-            CFRunLoopRun()
-        except KeyboardInterrupt:
-            self.running = False
-            self.print_report()
-
-    def stop(self):
-        self.running = False
-        CFRunLoopStop(CFRunLoopGetCurrent())
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='macOS 实时焦点监测',
-        epilog='示例: python3 focus_monitor.py -v -t 0.5',
+        description='macOS 实时焦点监测（轮询方式）',
+        epilog='示例: python3 focus_monitor.py -v',
     )
     parser.add_argument('-o', '--output', help='日志文件路径')
     parser.add_argument('-v', '--verbose', action='store_true', help='显示所有焦点变化')
     parser.add_argument('-t', '--threshold', type=float, default=0.3,
                         help='可疑阈值秒数 (默认 0.3)')
+    parser.add_argument('-i', '--interval', type=float, default=0.1,
+                        help='轮询间隔秒数 (默认 0.1)')
     args = parser.parse_args()
 
     monitor = FocusMonitor(
         output_file=args.output,
         verbose=args.verbose,
         threshold=args.threshold,
+        interval=args.interval,
     )
 
     def shutdown(signum=None, frame=None):
-        print('\n\U0001f6d1 正在停止...', flush=True)
-        monitor.print_report()
-        if monitor.running:
-            monitor.stop()
+        monitor.running = False
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
-    monitor.start()
+
+    monitor.run()
 
 
 if __name__ == '__main__':
