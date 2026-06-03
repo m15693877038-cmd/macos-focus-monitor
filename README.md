@@ -29,6 +29,9 @@
 
 ```bash
 git clone https://github.com/Rain-at-Spring-Dawn/macos-focus-monitor.git && cd macos-focus-monitor
+
+> 💡 如果提示 "already exists"，说明你之前下载过了，直接运行：
+>    `cd macos-focus-monitor` 然后继续下一步即可。
 ```
 
 📌 *这行命令的意思是：把本工具下载到你电脑上，然后进到工具文件夹里。*
